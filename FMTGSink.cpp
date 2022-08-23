@@ -15,8 +15,8 @@
 const int kPbSampleFrq = 48000;
 const int kPbBitDepth = 16;
 const int kPbChannelCount = 2;
-const int kPbSamoleCount = 240;
-const int kPbBlockSize = kPbSamoleCount * (kPbBitDepth / 8) * kPbChannelCount;
+const int kPbSampleCount = 240;
+const int kPbBlockSize = kPbSampleCount * (kPbBitDepth / 8) * kPbChannelCount;
 const int kPbCacheSize = (2 * 1024);
 
 const int kPbBytePerSec = kPbSampleFrq * (kPbBitDepth / 8) * kPbChannelCount;
@@ -80,7 +80,7 @@ int FMTGSink::getPlayingChannelMap(void)
 }
 
 FMTGSink::FMTGSink() : NullFilter(),
-    renderer_(kPbSampleFrq, kPbBitDepth, kPbChannelCount, kPbSamoleCount, kPbCacheSize, 1), inst_(1) {
+    renderer_(kPbSampleFrq, kPbBitDepth, kPbChannelCount, kPbSampleCount, kPbCacheSize, 1), inst_(1) {
     for (int i = 0; i < FMTGSINK_MAX_VOICES; i++) {
         voices_[i].noteNo = INVALID_NOTE_NUMBER;
     }
