@@ -9,7 +9,6 @@
 
 #include <time.h>
 
-#include "ScoreReader.h"
 #include "YuruInstrumentFilter.h"
 
 class MidiInSrc : public BaseFilter {

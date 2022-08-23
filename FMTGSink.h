@@ -45,7 +45,7 @@ private:
     int getPlayingChannelMap(void);
 
 public:
-    enum ParamId {                         // MAGIC CHAR = 'F'
+    enum ParamId {                            // MAGIC CHAR = 'F'
         PARAMID_INST           = ('F' << 8),  //<
         PARAMID_PLAYING_CH_MAP
     };

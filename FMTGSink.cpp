@@ -224,8 +224,7 @@ bool FMTGSink::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
     }
 
     if (ch == FMTGSINK_MAX_VOICES) {
-        // 空いているチャンネルがなかった
-        // 一番古い KeyOn を乗っ取る（後着優先）
+        // 空いているチャンネルがなかったため、一番古い KeyOn を乗っ取る（後着優先）
         ch = keyOnLog_[0];
         keyOnLog_.erase(keyOnLog_.begin());
 
@@ -253,7 +252,6 @@ bool FMTGSink::sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel) {
     int ch = 0;
     for (ch = 0; ch < FMTGSINK_MAX_VOICES; ch++) {
         if (voices_[ch].noteNo == note && voices_[ch].channel == channel) {
-            // 見つかった
             break;
         }
     }
