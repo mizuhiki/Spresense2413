@@ -32,8 +32,6 @@ bool MidiInSrc::isAvailable(int param_id) {
 
 bool MidiInSrc::begin() {
     MIDI.begin(MIDI_CHANNEL_OMNI);
-    printf("MidiInSrc::begin()\n");
-
     return BaseFilter::begin();
 }
 
