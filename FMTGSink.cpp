@@ -33,6 +33,7 @@ constexpr int kOpllClk = 3456000; // = 48000 * 72
 constexpr int kFreqA4 = 440; // Hz
 constexpr int kFnumA4 = kFreqA4 * 262144 /* = 2^18 */ / kPbSampleFrq / 16 /* = 2^oct */;
 
+constexpr int kDefaultInstNo = 1; // Violin
 
 static uint32_t msToSa(int ms) {
     return kPbSampleFrq * ms / 1000 * (kPbBitDepth / 8) * kPbChannelCount;
@@ -80,9 +81,13 @@ int FMTGSink::getPlayingChannelMap(void)
 }
 
 FMTGSink::FMTGSink() : NullFilter(),
-    renderer_(kPbSampleFrq, kPbBitDepth, kPbChannelCount, kPbSampleCount, kPbCacheSize, 1), inst_(1) {
+    renderer_(kPbSampleFrq, kPbBitDepth, kPbChannelCount, kPbSampleCount, kPbCacheSize, 1) {
     for (int i = 0; i < FMTGSINK_MAX_VOICES; i++) {
         voices_[i].noteNo = INVALID_NOTE_NUMBER;
+    }
+
+    for (int ch = 0; ch < 16; ch++) {
+        inst_[ch] = kDefaultInstNo;
     }
 }
 
@@ -150,43 +155,53 @@ bool FMTGSink::isAvailable(int param_id) {
 }
 
 intptr_t FMTGSink::getParam(int param_id) {
-    switch (param_id) {
-    case FMTGSink::PARAMID_INST:
-        return inst_;
+    if (FMTGSink::PARAMID_INST <= param_id && param_id <= FMTGSink::PARAMID_INST + 15) {
+        int ch = param_id - FMTGSink::PARAMID_INST;
+        return inst_[ch];
+    } else {
+        switch (param_id) {
+        case FMTGSink::PARAMID_INST:
+            return inst_;
 
-    case FMTGSink::PARAMID_PLAYING_CH_MAP:
-        return getPlayingChannelMap();
+        case FMTGSink::PARAMID_PLAYING_CH_MAP:
+            return getPlayingChannelMap();
 
-    case Filter::PARAMID_OUTPUT_LEVEL:
-        return volume_;
-    
-    default:
-        break;
+        case Filter::PARAMID_OUTPUT_LEVEL:
+            return volume_;
+        
+        default:
+            break;
+        }
     }
 
     return NullFilter::getParam(param_id);
 }
 
 bool FMTGSink::setParam(int param_id, intptr_t value) {
-    switch (param_id) {
-    case FMTGSink::PARAMID_INST:
-        if (inst_ < 0 || 15 < inst_) {
+    if (FMTGSink::PARAMID_INST <= param_id && param_id <= FMTGSink::PARAMID_INST + 15) {
+        int ch = param_id - FMTGSink::PARAMID_INST;
+
+        if (value < 0 || 15 < value) {
             return false;
         }
-        inst_ = value;
-        return true;
 
-    case FMTGSink::PARAMID_PLAYING_CH_MAP:
-        // read-only
-        break;
+        inst_[ch] = value;
 
-    case Filter::PARAMID_OUTPUT_LEVEL:
-        volume_ = constrain(value, kVolumeMin, kVolumeMax);
-        renderer_.setVolume(volume_, 0, 0);
         return true;
-    
-    default:
-        break;
+    } else {
+        switch (param_id) {
+        case FMTGSink::PARAMID_PLAYING_CH_MAP:
+            // read-only
+            break;
+
+        case Filter::PARAMID_OUTPUT_LEVEL:
+            volume_ = constrain(value, kVolumeMin, kVolumeMax);
+            renderer_.setVolume(volume_, 0, 0);
+            return true;
+        
+        default:
+            break;
+        }
     }
 
     return NullFilter::setParam(param_id, value);
@@ -215,6 +230,10 @@ static int CalculateBlockAndFNumber(int note) {
 }
 
 bool FMTGSink::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
+    if (note > 127 || velocity > 127 || channel > 15) {
+        return false;
+    }
+
     // 空いているチャンネルを探す
     int ch = 0;
     for (ch = 0; ch < FMTGSINK_MAX_VOICES; ch++) {
@@ -238,7 +257,7 @@ bool FMTGSink::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
     if (NOTE_NUMBER_MIN <= note && note <= NOTE_NUMBER_MAX) {
         int bf = CalculateBlockAndFNumber(note);
         uint8_t vol = 0x0f - (velocity >> 3) & 0x0f;
-        uint8_t inst = (uint8_t)inst_ << 4;
+        uint8_t inst = (uint8_t)inst_[channel] << 4;
         OPLL_writeReg(opll_, 0x30 + ch, inst | vol);       /* set inst# and volume. */
         OPLL_writeReg(opll_, 0x10 + ch, bf & 0xFF);        /* set F-Number(L). */
         OPLL_writeReg(opll_, 0x20 + ch, 0x10 + (bf >> 8)); /* set BLK & F-Number(H) and keyon. */

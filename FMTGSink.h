@@ -30,7 +30,7 @@ private:
     OPLL *opll_;
 
     int volume_;
-    int inst_;
+    int inst_[16];  // 各チャンネルに設定した音色番号
     PcmRenderer renderer_;
 
     struct Voice {
@@ -45,9 +45,9 @@ private:
     int getPlayingChannelMap(void);
 
 public:
-    enum ParamId {                            // MAGIC CHAR = 'F'
-        PARAMID_INST           = ('F' << 8),  //<
-        PARAMID_PLAYING_CH_MAP
+    enum ParamId {                             // MAGIC CHAR = 'F'
+        PARAMID_INST            = ('F' << 8),  //<
+        PARAMID_PLAYING_CH_MAP  = PARAMID_INST + 16
     };
 
     // Constructor
