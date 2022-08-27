@@ -40,11 +40,13 @@ void MidiInSrc::update() {
     if (MIDI.read()) {
         switch (MIDI.getType()) {
         case midi::NoteOn:
-            sendNoteOn(MIDI.getData1(), MIDI.getData2(), MIDI.getChannel());
+            sendNoteOn(MIDI.getData1(), MIDI.getData2(), MIDI.getChannel() - 1);
+            // memo: Arduino MIDI Library では、MIDI チャンネルを 1-16 で表現するが、
+            //       Sound Signal Processing Library for Spresense では 0-15 で扱うため調整する
             break;
 
         case midi::NoteOff:
-            sendNoteOff(MIDI.getData1(), MIDI.getData2(), MIDI.getChannel());
+            sendNoteOff(MIDI.getData1(), MIDI.getData2(), MIDI.getChannel() - 1);
             break;
 
         default:

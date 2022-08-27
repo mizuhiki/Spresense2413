@@ -17,23 +17,25 @@
 #include "MidiInSrc.h"
 
 const char *inst_name[] = {
-    "User",
-    "Violin",
-    "Guitar",
-    "Piano",
-    "Flute",
-    "Clarinet",
-    "Oboe",
-    "Trumpet",
-    "Organ",
-    "Horn",
-    "Synthesizer",
-    "Harpsichord",
-    "Vibraphone",
-    "Synthesizer Bass",
-    "Acoustic Bass",
-    "Electric Guitar"
+    "User",              // 0
+    "Violin",            // 1
+    "Guitar",            // 2
+    "Piano",             // 3
+    "Flute",             // 4
+    "Clarinet",          // 5
+    "Oboe",              // 6
+    "Trumpet",           // 7
+    "Organ",             // 8
+    "Horn",              // 9
+    "Synthesizer",       // 10
+    "Harpsichord",       // 11
+    "Vibraphone",        // 12
+    "Synthesizer Bass",  // 13
+    "Acoustic Bass",     // 14
+    "Electric Guitar"    // 15
 };
+
+#define INIT_INST_NO 1 // Violin
 
 FMTGSink fmTGSink;
 MidiInSrc inst(fmTGSink);
@@ -71,6 +73,12 @@ void setup() {
         }
     }
 
+    // 初期音色の設定
+    for (int ch = 0; ch < 16; ch++) {
+        inst.setParam(FMTGSink::PARAMID_INST + ch, INIT_INST_NO);
+    }
+
+
     Serial.println("Ready to play Spresense EMU2413.");
     Serial.println("[Button D4] Change instrument / [Button D5] Play A4(440Hz)");
     showCurrentInst();
@@ -91,7 +99,11 @@ void loop() {
                     instNo = 0;
                 }
 
-                inst.setParam(FMTGSink::PARAMID_INST, instNo);
+                for (int ch = 0; ch < 16; ch++) {
+                    // 全てのチャンネルの音色を同じ音色に設定する
+                    inst.setParam(FMTGSink::PARAMID_INST + ch, instNo);
+                }
+
                 showCurrentInst();
             }
 
