@@ -13,25 +13,22 @@
 
 #include <Arduino.h>
 
-#include <File.h>
-
 #include "PcmRenderer.h"
-#include "WavReader.h"
 #include "YuruInstrumentFilter.h"
 
-extern "C" {
-#include "emu2413.h"
-}
+#include "Spresense2413Sub/Message.h"
 
-#define FMTGSINK_MAX_VOICES 3
+#define FMTGSINK_MAX_VOICES 6
+#define FMTGSINK_SUB_CORE_NUM 3
+#define FMTGSINK_VOICES_PER_CORE 3
+#define FMTGSINK_ENABLE_RHYTHM_MODE
 
 class FMTGSink : public NullFilter {
 private:
-    OPLL *opll_;
-
     int volume_;
     int inst_[16];  // 各チャンネルに設定した音色番号
     PcmRenderer renderer_;
+    bool isFirstRendering_;
 
     struct Voice {
         int noteNo;
@@ -40,7 +37,12 @@ private:
     
     Voice voices_[FMTGSINK_MAX_VOICES];
     std::vector<int> keyOnLog_;
-
+    std::vector<Message::SetRegValue_t> regValuesStandby_[FMTGSINK_SUB_CORE_NUM];
+    std::vector<Message::SetRegValue_t> regValues_[FMTGSINK_SUB_CORE_NUM];
+    uint8_t rhythmState_;
+    uint8_t rhythmVolumes_[6];
+    
+    void doFirstRendering();
     void writeToRenderer(int ch);
     int getPlayingChannelMap(void);
 

@@ -882,7 +882,14 @@ static void update_slots(OPLL *opll) {
   int i;
   opll->eg_counter++;
 
-  for (i = 0; i < opll->max_voices * 2; i++) {
+//  for (i = 0; i < opll->max_voices * 2; i++) {
+#if (SUBCORE == 1)
+  for (i = 0; i < 6; i++) {
+#elif (SUBCORE == 2)
+  for (i = 6; i < 12; i++) {
+#elif (SUBCORE == 3)
+  for (i = 12; i < 18; i++) {
+#endif
     OPLL_SLOT *slot = &opll->slot[i];
     OPLL_SLOT *buddy = NULL;
     if (slot->type == 0) {

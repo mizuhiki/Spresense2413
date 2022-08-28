@@ -12,9 +12,12 @@
 #endif
 
 #include <MemoryUtil.h>
+#include <MP.h>
 
 #include "FMTGSink.h"
 #include "MidiInSrc.h"
+
+#include "LcdCtrl.h"
 
 const char *inst_name[] = {
     "User",              // 0
@@ -36,12 +39,33 @@ const char *inst_name[] = {
 };
 
 #define INIT_INST_NO 1 // Violin
+#define SPRESENSE_LED_NUM 4
 
 FMTGSink fmTGSink;
 MidiInSrc inst(fmTGSink);
+LcdCtrl lcdCtrl;
 
 int button4 = HIGH;
 int button5 = HIGH;
+
+static constexpr int InitInstNo[] = {
+    1,  // MIDI ch.1 (Violin)
+    2,  // MIDI ch.2 (Guitar)
+    3,  // MIDI ch.3 (Piano)
+    4,  // MIDI ch.4 (Flute)
+    5,  // MIDI ch.5 (Clarinet)
+    6,  // MIDI ch.6 (Oboe)
+    7,  // MIDI ch.7 (Trumpet)
+    8,  // MIDI ch.8 (Organ)
+    9,  // MIDI ch.9 (Horn)
+    0,  // MIDI Ch.10 (Rhythm Voice)
+    10, // MIDI ch.11 (Synthesizer)
+    11, // MIDI ch.12 (Harpsichord)
+    12, // MIDI ch.13 (Vibraphone)
+    13, // MIDI ch.14 (Synthesizer Bass)
+    14, // MIDI ch.15 (Acoustic Bass)
+    15, // MIDI Ch.16 (Electric Guitar)
+};
 
 static void showCurrentInst(void)
 {
@@ -56,6 +80,9 @@ void setup() {
     pinMode(LED1, OUTPUT);
     pinMode(LED2, OUTPUT);
     pinMode(LED3, OUTPUT);
+
+    lcdCtrl.Setup();
+    lcdCtrl.ShowLoadingScreen();
 
     // init buttons
     pinMode(PIN_D04, INPUT_PULLUP);
@@ -75,15 +102,15 @@ void setup() {
 
     // 初期音色の設定
     for (int ch = 0; ch < 16; ch++) {
-        inst.setParam(FMTGSink::PARAMID_INST + ch, INIT_INST_NO);
+        inst.setParam(FMTGSink::PARAMID_INST + ch, InitInstNo[ch]);
     }
 
+    lcdCtrl.ShowChStatusScreen();
 
     Serial.println("Ready to play Spresense EMU2413.");
     Serial.println("[Button D4] Change instrument / [Button D5] Play A4(440Hz)");
     showCurrentInst();
 }
-
 
 void loop() {
     // Change instrument
@@ -128,13 +155,18 @@ void loop() {
     // run instrument
     inst.update();
 
-    // Light the LED according to the playback channel
-    int map = inst.getParam(FMTGSink::PARAMID_PLAYING_CH_MAP);
-    for (int ch = 0; ch < FMTGSINK_MAX_VOICES; ch++) {
-        if (map & (1 << ch)) {
-            digitalWrite(LED0 + ch, HIGH);
-        } else {
-            digitalWrite(LED0 + ch, LOW);
+    unsigned long time = millis();
+    if (time % 10 == 0) {
+        // Light the LED according to the playback channel
+        int map = inst.getParam(FMTGSink::PARAMID_PLAYING_CH_MAP);
+        for (int ch = 0; ch < std::min(FMTGSINK_MAX_VOICES, SPRESENSE_LED_NUM); ch++) {
+            if (map & (1 << ch)) {
+                digitalWrite(LED0 + ch, HIGH);
+            } else {
+                digitalWrite(LED0 + ch, LOW);
+            }
         }
+
+        lcdCtrl.UpdateChStatus(map);
     }
 }

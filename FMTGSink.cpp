@@ -4,12 +4,14 @@
  * Copyright 2022 Takashi Mizuhiki
  */
 
+#define ARDUINO_ARCH_SPRESENSE
+
 #if defined(ARDUINO_ARCH_SPRESENSE) && !defined(SUBCORE)
+
+#include <MP.h>
 
 #include <math.h>
 #include "FMTGSink.h"
-
-#include <SDHCI.h>
 
 // playback parameters
 const int kPbSampleFrq = 48000;
@@ -35,37 +37,57 @@ constexpr int kFnumA4 = kFreqA4 * 262144 /* = 2^18 */ / kPbSampleFrq / 16 /* = 2
 
 constexpr int kDefaultInstNo = 1; // Violin
 
-static uint32_t msToSa(int ms) {
-    return kPbSampleFrq * ms / 1000 * (kPbBitDepth / 8) * kPbChannelCount;
-}
-
-static uint32_t msToByte(int ms) {
-    return kPbBytePerSec * ms / 1000;
-}
+static uint8_t buffer[FMTGSINK_SUB_CORE_NUM][kPbBlockSize];
+static Message::AudioRenderingBufferMsg_t msg[FMTGSINK_SUB_CORE_NUM];
 
 void FMTGSink::writeToRenderer(int ch)
 {
     while (renderer_.getWritableSize(ch) >= kPbBlockSize) {
-        size_t read_size = renderer_.getWritableSize(ch);
-        if (read_size > kPbBlockSize) {
-            read_size = kPbBlockSize;
+        size_t read_size = kPbBlockSize;
+
+        MP.RecvTimeout(1000);
+
+        // Recv ACK from sub core
+        for (int core = 0; core < FMTGSINK_SUB_CORE_NUM; core++) {
+            uint8_t rcvid;
+            void *dataPtr;
+            int ret = MP.Recv(&rcvid, &dataPtr, core + 1);
+            if (ret < 0) {
+                MPLog("MP Recv Error = %d, core = %d\n", ret, core + 1);
+            }
+
+            regValues_[core].clear();
         }
 
-        uint8_t buffer[read_size];
-        uint8_t *p = buffer;
+        // Mix all subcore output
+        for (int core = 1; core < FMTGSINK_SUB_CORE_NUM; core++) {
+            int16_t *d = (uint16_t *)buffer[0];
+            int16_t *s = (uint16_t *)buffer[core];
 
-        for (int i = 0; i < (read_size >> 2); i++) {
-            int16_t out = OPLL_calcNoRateConv(opll_);
-            uint8_t out_L =  out & 0xff;
-            uint8_t out_H = (out & 0xff00) >> 8;
-
-            *p++ = out_L; // Lch
-            *p++ = out_H;
-            *p++ = out_L; // Rch
-            *p++ = out_H;
+            for (int i = 0; i < (read_size >> 1); i++) {
+                *d += *s;
+                d++; s++;
+            }
         }
 
+        // Send to audio driver
         renderer_.write(ch, buffer, read_size);
+
+        // Send message to sub core
+        for (int core = 0; core < FMTGSINK_SUB_CORE_NUM; core++) {
+            regValues_[core] = regValuesStandby_[core];
+            regValuesStandby_[core].clear();
+
+            msg[core].buff = buffer[core];
+            msg[core].buffSize = read_size;
+            msg[core].regValue = regValues_[core].data();
+            msg[core].regValueSize = regValues_[core].size();
+
+            int ret = MP.Send(Message::kReqAudioRendering, &msg[core], core + 1);
+            if (ret < 0) {
+                MPLog("MP Send Error = %d, core = %d\n", ret, core + 1);
+            }
+        }
     }
 }
 
@@ -77,11 +99,18 @@ int FMTGSink::getPlayingChannelMap(void)
         map |= 1 << (*it);
     }
 
+#ifdef FMTGSINK_ENABLE_RHYTHM_MODE
+    if (rhythmState_ & 0x1f) {
+        map |= 1 << 6;
+    }
+#endif
+
     return map;
 }
 
 FMTGSink::FMTGSink() : NullFilter(),
-    renderer_(kPbSampleFrq, kPbBitDepth, kPbChannelCount, kPbSampleCount, kPbCacheSize, 1) {
+    renderer_(kPbSampleFrq, kPbBitDepth, kPbChannelCount, kPbSampleCount, kPbCacheSize, 1),
+    rhythmState_(0), isFirstRendering_(true) {
     for (int i = 0; i < FMTGSINK_MAX_VOICES; i++) {
         voices_[i].noteNo = INVALID_NOTE_NUMBER;
     }
@@ -89,23 +118,26 @@ FMTGSink::FMTGSink() : NullFilter(),
     for (int ch = 0; ch < 16; ch++) {
         inst_[ch] = kDefaultInstNo;
     }
+
+    memset(rhythmVolumes_, 0, sizeof(rhythmVolumes_));
 }
 
 FMTGSink::~FMTGSink() {
 }
 
 bool FMTGSink::begin() {
-    bool ok = true;
-
-    opll_ = OPLL_new(kOpllClk, kPbSampleFrq);
-    OPLL_setVoiceNum(opll_, FMTGSINK_MAX_VOICES);
-
-    int enable_ch = 0;
-    for (int i = 0; i < FMTGSINK_MAX_VOICES; i++) {
-        enable_ch |= 1 << i;
+    // Boot sub cores
+    for (int core = 0; core < FMTGSINK_SUB_CORE_NUM; core++) {
+        int ret = MP.begin(core + 1);
+        if (ret < 0) {
+            MPLog("MP.begin(%d) error = %d\n", core + 1, ret);
+        }
     }
-    OPLL_setMask(opll_, ~enable_ch);
 
+    return true;
+}
+
+void FMTGSink::doFirstRendering() {
     // setup renderer
     renderer_.begin();
     renderer_.clear(0);
@@ -119,10 +151,38 @@ bool FMTGSink::begin() {
 
     renderer_.setState(PcmRenderer::kStateActive);
 
-    return ok;
+#ifdef FMTGSINK_ENABLE_RHYTHM_MODE
+    int core = 2;
+    regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x16, .value = 0x20 });
+    regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x17, .value = 0x50 });
+    regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x18, .value = 0xC0 });
+    regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x26, .value = 0x05 });
+    regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x27, .value = 0x05 });
+    regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x28, .value = 0x01 });
+#endif
+
+    // Send message to sub core
+    for (int core = 0; core < FMTGSINK_SUB_CORE_NUM; core++) {
+        msg[core].buff = buffer[core];
+        msg[core].buffSize = kPbBlockSize;
+        msg[core].regValue = regValuesStandby_[core].data();
+        msg[core].regValueSize = regValuesStandby_[core].size();
+
+        int ret = MP.Send(Message::kReqAudioRendering, &msg[core], core + 1);
+        if (ret < 0) {
+            MPLog("MP Send Error = %d, core = %d\n", ret, core + 1);
+        }
+    }
+
+    return true;
 }
 
 void FMTGSink::update() {
+    if (isFirstRendering_) {
+        isFirstRendering_ = false;
+        doFirstRendering();
+    }
+            
     switch (renderer_.getState()) {
         case PcmRenderer::kStateReady:
             break;
@@ -207,7 +267,6 @@ bool FMTGSink::setParam(int param_id, intptr_t value) {
     return NullFilter::setParam(param_id, value);
 }
 
-
 // F-number calculation come from SynthDriver.cpp in keijiro/vst2413
 // https://github.com/keijiro/vst2413/blob/master/source/SynthDriver.cpp
 
@@ -229,68 +288,139 @@ static int CalculateBlockAndFNumber(int note) {
     return (NoteToBlock(note) << 9) + CalculateFNumber(note, 0);
 }
 
+// https://github.com/keijiro/vst2413/blob/master/source/RhythmDriver.cpp
+int NoteToKeyBit(int note) {
+    switch (note) {
+        case 36:
+            return 16; // kick
+        case 38:
+            return 8; // snare
+        case 43:
+        case 47:
+        case 50:
+            return 4; // tom
+        case 49:
+        case 51:
+            return 2; // cymbal
+        case 42:
+        case 44:
+            return 1; // hat
+    }
+    return 0;
+}
+
+int NoteToVolumeRegisterPosition(int note) {
+    switch (note) {
+        case 36:
+            return 0; // kick
+        case 38:
+            return 2; // snare
+        case 43:
+        case 47:
+        case 50:
+            return 5; // tom
+        case 49:
+        case 51:
+            return 4; // cymbal
+        case 42:
+        case 44:
+            return 3; // hat
+    }
+    return 1; // null
+}
+
 bool FMTGSink::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
     if (note > 127 || velocity > 127 || channel > 15) {
         return false;
     }
 
-    // 空いているチャンネルを探す
-    int ch = 0;
-    for (ch = 0; ch < FMTGSINK_MAX_VOICES; ch++) {
-        if (voices_[ch].noteNo == INVALID_NOTE_NUMBER) {
-            break;
+#ifdef FMTGSINK_ENABLE_RHYTHM_MODE
+    if (channel == 9) {
+        rhythmState_ |= NoteToKeyBit(note);
+
+        int vrp = NoteToVolumeRegisterPosition(note);
+        rhythmVolumes_[vrp] = 0x0f - ((velocity >> 3) & 0x0f);
+        uint8_t val = rhythmVolumes_[vrp | 1] << 4 | rhythmVolumes_[vrp & 6];
+        //OPLL_writeReg(opll, 0x36 + (position >> 1), val);
+        int core = 2;
+        regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x36 + (vrp >> 1), .value = val });
+        regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x0E, .value = 0x20 | (rhythmState_ & 0x1f) });
+    } else {
+#endif /* FMTGSINK_ENABLE_RHYTHM_MODE */
+        // 空いているチャンネルを探す
+        int ch = 0;
+        int core = 0;
+        for (ch = 0; ch < FMTGSINK_MAX_VOICES; ch++) {
+            if (voices_[ch].noteNo == INVALID_NOTE_NUMBER) {
+                break;
+            }
         }
-    }
 
-    if (ch == FMTGSINK_MAX_VOICES) {
-        // 空いているチャンネルがなかったため、一番古い KeyOn を乗っ取る（後着優先）
-        ch = keyOnLog_[0];
-        keyOnLog_.erase(keyOnLog_.begin());
+        core = ch / FMTGSINK_VOICES_PER_CORE;
 
-        OPLL_writeReg(opll_, 0x20 + ch, 0x00); // keyoff
-    }
+        if (ch == FMTGSINK_MAX_VOICES) {
+            // 空いているチャンネルがなかったため、一番古い KeyOn を乗っ取る（後着優先）
+            ch = keyOnLog_[0];
+            keyOnLog_.erase(keyOnLog_.begin());
 
-    voices_[ch].noteNo = note;
-    voices_[ch].channel = channel;
-    keyOnLog_.push_back(ch);
+            core = ch / FMTGSINK_VOICES_PER_CORE;
+            regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x20 + ch, 0x00 });
+        }
 
-    if (NOTE_NUMBER_MIN <= note && note <= NOTE_NUMBER_MAX) {
+        voices_[ch].noteNo = note;
+        voices_[ch].channel = channel;
+        keyOnLog_.push_back(ch);
+
         int bf = CalculateBlockAndFNumber(note);
-        uint8_t vol = 0x0f - (velocity >> 3) & 0x0f;
+        uint8_t vol = 0x0f - ((velocity >> 3) & 0x0f);
         uint8_t inst = (uint8_t)inst_[channel] << 4;
-        OPLL_writeReg(opll_, 0x30 + ch, inst | vol);       /* set inst# and volume. */
-        OPLL_writeReg(opll_, 0x10 + ch, bf & 0xFF);        /* set F-Number(L). */
-        OPLL_writeReg(opll_, 0x20 + ch, 0x10 + (bf >> 8)); /* set BLK & F-Number(H) and keyon. */
+
+        regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x30 + ch, .value = inst | vol });
+        regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x10 + ch, .value = bf & 0xff });
+        regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x20 + ch, .value = 0x10 + (bf >> 8) });
+#ifdef FMTGSINK_ENABLE_RHYTHM_MODE
     }
+#endif /* FMTGSINK_ENABLE_RHYTHM_MODE */
 
     return true;
 }
 
 bool FMTGSink::sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel) {
-    // Note Off すべきチャンネルをスキャン
-    int ch = 0;
-    for (ch = 0; ch < FMTGSINK_MAX_VOICES; ch++) {
-        if (voices_[ch].noteNo == note && voices_[ch].channel == channel) {
-            break;
+#ifdef FMTGSINK_ENABLE_RHYTHM_MODE
+    if (channel == 9) {
+        rhythmState_ &= ~NoteToKeyBit(note);
+        int core = 2;
+        regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x0E, .value = 0x20 | (rhythmState_ & 0x1f) });
+    } else {
+#endif /* FMTGSINK_ENABLE_RHYTHM_MODE */
+        // Note Off すべきチャンネルをスキャン
+        int ch = 0;
+        for (ch = 0; ch < FMTGSINK_MAX_VOICES; ch++) {
+            if (voices_[ch].noteNo == note && voices_[ch].channel == channel) {
+                break;
+            }
         }
-    }
 
-    if (ch == FMTGSINK_MAX_VOICES) {
-        // Note Off すべきチャンネルが見つからなかった
-        return false;
-    }
-
-    OPLL_writeReg(opll_, 0x20 + ch, 0x00); // keyoff
-
-    voices_[ch].noteNo = INVALID_NOTE_NUMBER;
-
-    for (auto it = keyOnLog_.begin(); it != keyOnLog_.end(); ) {
-        if (*it == ch) {
-            it = keyOnLog_.erase(it);
-        } else {
-            ++it;
+        if (ch == FMTGSINK_MAX_VOICES) {
+            // Note Off すべきチャンネルが見つからなかった
+            return false;
         }
+
+        int core = ch / FMTGSINK_VOICES_PER_CORE;
+        regValuesStandby_[core].push_back((Message::SetRegValue_t){ .addr = 0x20 + ch, .value = 0x00 });
+
+        voices_[ch].noteNo = INVALID_NOTE_NUMBER;
+
+        for (auto it = keyOnLog_.begin(); it != keyOnLog_.end(); ) {
+            if (*it == ch) {
+                it = keyOnLog_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+#ifdef FMTGSINK_ENABLE_RHYTHM_MODE
     }
+#endif /* FMTGSINK_ENABLE_RHYTHM_MODE */
 
     return true;
 }
